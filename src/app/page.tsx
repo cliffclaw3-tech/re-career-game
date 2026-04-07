@@ -789,8 +789,11 @@ export default function Home() {
             <Panel>
               <SectionHeader eyebrow="Step 6" title="Stats dashboard" description="A live scorecard for production, cost, runway, and goal pacing." />
               <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <DashboardCard label="Current closings" value={number(businessState.monthlyClosings)} note="Baseline monthly closings entered in business state." emphasis="default" />
                 <DashboardCard label="Projected closings" value={number(forecast.projectedClosings)} note="Monthly closings from current mix." emphasis={forecast.projectedClosings >= goals.targetMonthlyClosings ? "safe" : "warn"} />
+                <DashboardCard label="Current volume" value={currency(businessState.monthlyVolume)} note="Current monthly production volume baseline." emphasis="default" />
                 <DashboardCard label="Projected gross income" value={currency(forecast.projectedIncome)} note="Gross commission produced by active scenario." emphasis="default" />
+                <DashboardCard label="Database + team" value={`${number(businessState.databaseSize, 0)} · ${number(businessState.teamMembers, 0)}`} note="Contacts in database and people involved in delivery." emphasis="default" />
                 <DashboardCard label="Modeled expenses" value={currency(forecast.monthlyExpenses)} note="Living + business + brokerage + methods + support." emphasis="default" />
                 <DashboardCard label="Projected net income" value={currency(forecast.netIncome)} note="Monthly net before tax." emphasis={forecast.netIncome >= 0 ? "safe" : "danger"} />
                 <DashboardCard label="Runway months" value={number(forecast.runwayMonths)} note={getStageLabel(forecast.runwayMonths)} emphasis={forecast.runwayMonths >= 6 ? "safe" : forecast.runwayMonths >= 3 ? "warn" : "danger"} />
