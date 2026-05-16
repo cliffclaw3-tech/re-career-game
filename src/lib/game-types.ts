@@ -39,6 +39,142 @@ export type ActionType =
   | 'toggle-tax-reserve'
   | 'end-turn';
 
+// ── Character types ──────────────────────────────────────────────────────
+
+export interface CharacterConfig {
+  gender: 'male' | 'female';
+  age: 'young' | 'mid' | 'veteran';
+  outfit: 'formal' | 'casual' | 'hustle';
+}
+
+// ── City types ───────────────────────────────────────────────────────────
+
+export type CityId = 'kansas-city' | 'detroit' | 'las-vegas' | 'beverly-hills' | 'new-york';
+
+export interface CityConfig {
+  id: CityId;
+  name: string;
+  emoji: string;
+  difficulty: number; // 1-5 stars
+  tagline: string;
+  avgDealGCI: number;
+  easyStreetMonthlyExpenses: number;
+  year1GCITarget: number;
+  annualGCIEasyStreet: number;
+  tierCToB: number;
+  tierBToA: number;
+  tierAToClose: number;
+  eventFrequency: 'low' | 'medium' | 'high' | 'volatile';
+  cardsPerRound: number;
+  marketMultiplierMin: number;
+  marketMultiplierMax: number;
+  accentColor: string;   // tailwind class for border/text
+  tags: string[];
+}
+
+export const CITY_CONFIGS: Record<CityId, CityConfig> = {
+  'kansas-city': {
+    id: 'kansas-city',
+    name: 'Kansas City',
+    emoji: '🌾',
+    difficulty: 2,
+    tagline: 'Steady volume. Builder relationships. Long game.',
+    avgDealGCI: 8550,
+    easyStreetMonthlyExpenses: 4000,
+    year1GCITarget: 30000,
+    annualGCIEasyStreet: 80000,
+    tierCToB: 0.50,
+    tierBToA: 0.65,
+    tierAToClose: 0.85,
+    eventFrequency: 'low',
+    cardsPerRound: 2,
+    marketMultiplierMin: 0.85,
+    marketMultiplierMax: 1.20,
+    accentColor: 'text-green-400 border-green-500/40',
+    tags: ['Builder referrals', 'Stable market', 'Community-driven'],
+  },
+  'detroit': {
+    id: 'detroit',
+    name: 'Detroit',
+    emoji: '🔧',
+    difficulty: 3,
+    tagline: 'Distressed. Title chaos. Investor competition.',
+    avgDealGCI: 6000,
+    easyStreetMonthlyExpenses: 3500,
+    year1GCITarget: 25000,
+    annualGCIEasyStreet: 70000,
+    tierCToB: 0.50,
+    tierBToA: 0.65,
+    tierAToClose: 0.85,
+    eventFrequency: 'medium',
+    cardsPerRound: 2,
+    marketMultiplierMin: 0.60,
+    marketMultiplierMax: 1.25,
+    accentColor: 'text-orange-400 border-orange-500/40',
+    tags: ['Title issues', 'Investor buyers', 'Portfolio deals'],
+  },
+  'las-vegas': {
+    id: 'las-vegas',
+    name: 'Las Vegas',
+    emoji: '🎰',
+    difficulty: 4,
+    tagline: 'Boom. Bust. Repeat. Out-of-state everything.',
+    avgDealGCI: 12000,
+    easyStreetMonthlyExpenses: 6000,
+    year1GCITarget: 40000,
+    annualGCIEasyStreet: 100000,
+    tierCToB: 0.50,
+    tierBToA: 0.65,
+    tierAToClose: 0.85,
+    eventFrequency: 'volatile',
+    cardsPerRound: 2,
+    marketMultiplierMin: 0.50,
+    marketMultiplierMax: 1.60,
+    accentColor: 'text-purple-400 border-purple-500/40',
+    tags: ['Volatile market', 'Out-of-state buyers', 'High risk/reward'],
+  },
+  'beverly-hills': {
+    id: 'beverly-hills',
+    name: 'Beverly Hills',
+    emoji: '💎',
+    difficulty: 4,
+    tagline: 'Off-market. Celebrity buyers. Perfection expected.',
+    avgDealGCI: 45000,
+    easyStreetMonthlyExpenses: 10000,
+    year1GCITarget: 80000,
+    annualGCIEasyStreet: 200000,
+    tierCToB: 0.50,
+    tierBToA: 0.65,
+    tierAToClose: 0.85,
+    eventFrequency: 'medium',
+    cardsPerRound: 2,
+    marketMultiplierMin: 0.80,
+    marketMultiplierMax: 1.35,
+    accentColor: 'text-pink-400 border-pink-500/40',
+    tags: ['Off-market deals', 'Celebrity clients', 'Ultra-luxury'],
+  },
+  'new-york': {
+    id: 'new-york',
+    name: 'New York',
+    emoji: '🗽',
+    difficulty: 5,
+    tagline: 'Co-op boards. Bidding wars. No mercy.',
+    avgDealGCI: 38000,
+    easyStreetMonthlyExpenses: 8000,
+    year1GCITarget: 70000,
+    annualGCIEasyStreet: 180000,
+    tierCToB: 0.40,
+    tierBToA: 0.55,
+    tierAToClose: 0.80,
+    eventFrequency: 'high',
+    cardsPerRound: 3,
+    marketMultiplierMin: 0.70,
+    marketMultiplierMax: 1.40,
+    accentColor: 'text-sky-400 border-sky-500/40',
+    tags: ['Co-op boards', 'Bidding wars', 'Expert mode'],
+  },
+};
+
 export interface CardEffect {
   // Pipeline changes
   addTierA?: number;
@@ -89,6 +225,13 @@ export interface ResolvedCard {
 export interface GameState {
   // ── Meta ─────────────────────────────────────────────
   playerName: string;
+  characterGender: 'male' | 'female';
+  characterAge: 'young' | 'mid' | 'veteran';
+  characterOutfit: 'formal' | 'casual' | 'hustle';
+  city: CityId;
+
+  // ── Dice ──────────────────────────────────────────────
+  lastDiceRoll: number | null;
 
   // ── Time ─────────────────────────────────────────────
   round: number;     // 1–32 (8 years × 4 quarters)

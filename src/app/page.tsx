@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useReducer } from "react";
+import React, { useEffect, useReducer, useState, useCallback } from "react";
 import {
   createInitialState,
   executeAction,
@@ -14,18 +14,22 @@ import {
   LEVEL_GATES,
 } from "@/lib/game-engine";
 import { getCardById } from "@/lib/game-cards";
-import type { GameState } from "@/lib/game-types";
+import type { GameState, CharacterConfig, CityId } from "@/lib/game-types";
 import type { CardDef } from "@/lib/game-types";
-import { GAME_CONSTANTS, LEVEL_LABELS, LEVEL_DESCRIPTIONS } from "@/lib/game-types";
+import { GAME_CONSTANTS, LEVEL_LABELS, LEVEL_DESCRIPTIONS, CITY_CONFIGS } from "@/lib/game-types";
+import DiceModal from "@/components/DiceModal";
+import CharacterSelect from "@/components/CharacterSelect";
+import CitySelect from "@/components/CitySelect";
+import TrailerScreen from "@/components/TrailerScreen";
 
 // ── Game reducer ───────────────────────────────────────────────────────
 
 type GameAction =
-  | { type: "START"; playerName: string }
+  | { type: "START"; playerName: string; character: CharacterConfig; city: CityId }
   | { type: "LOAD" }
-  | { type: "ACTION"; actionType: string }
-  | { type: "END_TURN" }
-  | { type: "REVEAL_CARD" }
+  | { type: "ACTION"; actionType: string; diceRoll?: number }
+  | { type: "END_TURN"; diceRoll?: number }
+  | { type: "REVEAL_CARD"; diceRoll?: number }
   | { type: "NEXT_CARD" }
   | { type: "LEVEL_UP_CONFIRM" }
   | { type: "RESTART" };
@@ -40,14 +44,15 @@ interface GameStore {
 function gameReducer(store: GameStore, action: GameAction): GameStore {
   switch (action.type) {
     case "START": {
-      const state = createInitialState(action.playerName);
-      const deck = initDeck();
-      const drawnIds = deck.slice(0, 2);
-      const remaining = deck.slice(2);
+      const state = createInitialState(action.playerName, action.character, action.city);
+      const deck = initDeck(action.city);
+      const cardsPerRound = CITY_CONFIGS[action.city]?.cardsPerRound ?? 2;
+      const drawnIds = deck.slice(0, cardsPerRound);
+      const remaining = deck.slice(cardsPerRound);
       const updatedState: GameState = {
         ...state,
         drawnCards: drawnIds.map((id) => ({
-          card: getCardById(id),
+          card: getCardById(id, action.city),
           revealed: false,
         })),
         phase: "action",
@@ -66,7 +71,12 @@ function gameReducer(store: GameStore, action: GameAction): GameStore {
 
     case "ACTION": {
       if (!store.state || store.state.actionPoints <= 0) return store;
-      const { newState, result, newDeck } = executeAction(store.state, action.actionType, store.deck);
+      const { newState, result, newDeck } = executeAction(
+        store.state,
+        action.actionType,
+        store.deck,
+        action.diceRoll
+      );
 
       // Add to log
       const logEntry = {
@@ -86,7 +96,11 @@ function gameReducer(store: GameStore, action: GameAction): GameStore {
 
     case "END_TURN": {
       if (!store.state) return store;
-      const { newState, newDeck, roundSummary } = resolveEndOfRound(store.state, store.deck);
+      const { newState, newDeck, roundSummary } = resolveEndOfRound(
+        store.state,
+        store.deck,
+        action.diceRoll
+      );
       const logEntries = roundSummary.map((text) => ({
         round: store.state!.round,
         text,
@@ -108,9 +122,9 @@ function gameReducer(store: GameStore, action: GameAction): GameStore {
 
       cards[idx] = { ...cards[idx], revealed: true };
 
-      // Apply the card effect
+      // Apply the card effect (with dice)
       const effect = cards[idx].card.effect;
-      let newState = applyCardEffect(store.state, effect);
+      let newState = applyCardEffect(store.state, effect, action.diceRoll);
       newState = {
         ...newState,
         drawnCards: cards,
@@ -118,7 +132,7 @@ function gameReducer(store: GameStore, action: GameAction): GameStore {
           ...(newState.log || []),
           {
             round: store.state.round,
-            text: `[Card: ${cards[idx].card.name}] ${effect.message}`,
+            text: `[Card: ${cards[idx].card.name}] ${effect.message}${action.diceRoll ? ` 🎲 ${action.diceRoll}` : ""}`,
             type: cards[idx].card.type === "trap" ? "bad" : "good",
           },
         ],
@@ -175,6 +189,10 @@ function pct(n: number): string {
 
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
+}
+
+function rollDie(): number {
+  return Math.floor(Math.random() * 6) + 1;
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────
@@ -283,7 +301,7 @@ function CardView({
           onClick={onReveal}
           className="mt-2 w-full rounded-xl bg-white text-black font-bold py-3 text-sm hover:bg-white/90 active:scale-95 transition-all"
         >
-          Reveal Effect
+          🎲 Roll &amp; Reveal Effect
         </button>
       ) : (
         <>
@@ -346,11 +364,19 @@ function GameScreen({
   state: GameState;
   dispatch: React.Dispatch<GameAction>;
 }) {
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [pendingEndTurn, setPendingEndTurn] = useState(false);
+  const [pendingReveal, setPendingReveal] = useState(false);
+  const [diceRoll, setDiceRoll] = useState<number | null>(null);
+  const [showDice, setShowDice] = useState(false);
+
   const canAct = state.actionPoints > 0 && state.phase === "action";
   const hasCashForAssistant = state.cash >= 5000;
   const hasCashForAgent = state.cash >= 8000;
   const hasCashForRental = state.cash >= 25000;
   const hasCashForMarketing = state.cash >= 2000;
+
+  const cityConfig = state.city ? CITY_CONFIGS[state.city] : null;
 
   const levelProgress = (() => {
     const next = state.level + 1;
@@ -366,13 +392,64 @@ function GameScreen({
     (state.passiveIncomeMonthly / state.monthlyPersonalExpenses) * 100
   );
 
+  // Trigger dice for an action
+  const triggerAction = useCallback((actionType: string) => {
+    if (!canAct) return;
+    if (actionType === "toggle-tax-reserve") {
+      dispatch({ type: "ACTION", actionType });
+      return;
+    }
+    const roll = rollDie();
+    setDiceRoll(roll);
+    setPendingAction(actionType);
+    setShowDice(true);
+  }, [canAct, dispatch]);
+
+  // After dice completes — dispatch the queued action
+  const onDiceComplete = useCallback(() => {
+    setShowDice(false);
+    if (pendingAction && diceRoll !== null) {
+      dispatch({ type: "ACTION", actionType: pendingAction, diceRoll });
+      setPendingAction(null);
+    } else if (pendingEndTurn && diceRoll !== null) {
+      dispatch({ type: "END_TURN", diceRoll });
+      setPendingEndTurn(false);
+    } else if (pendingReveal && diceRoll !== null) {
+      dispatch({ type: "REVEAL_CARD", diceRoll });
+      setPendingReveal(false);
+    }
+    setDiceRoll(null);
+  }, [pendingAction, pendingEndTurn, pendingReveal, diceRoll, dispatch]);
+
+  const handleEndTurn = () => {
+    const roll = rollDie();
+    setDiceRoll(roll);
+    setPendingEndTurn(true);
+    setShowDice(true);
+  };
+
+  const handleRevealCard = () => {
+    const roll = rollDie();
+    setDiceRoll(roll);
+    setPendingReveal(true);
+    setShowDice(true);
+  };
+
   return (
     <div className="flex flex-col min-h-screen bg-[#031019] text-white">
+      {/* Dice Modal */}
+      {showDice && diceRoll !== null && (
+        <DiceModal roll={diceRoll} onComplete={onDiceComplete} />
+      )}
+
       {/* ── Header ── */}
       <div className="sticky top-0 z-20 bg-[#031019]/95 backdrop-blur border-b border-white/10">
         <div className="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
           <div>
-            <p className="text-[10px] text-white/40 uppercase tracking-widest">AGENT · {state.playerName}</p>
+            <p className="text-[10px] text-white/40 uppercase tracking-widest">
+              AGENT · {state.playerName}
+              {state.city ? ` · ${CITY_CONFIGS[state.city]?.name ?? ""}` : ""}
+            </p>
             <p className="text-sm font-bold">
               Year {state.year}, Q{state.quarter} ·{" "}
               <span className="text-yellow-400">{LEVEL_LABELS[state.level]}</span>
@@ -423,7 +500,7 @@ function GameScreen({
           <StatPill
             label="Pending Deals"
             value={state.pendingDeals}
-            sub={`~${fmt(state.pendingDeals * GAME_CONSTANTS.GCI_PER_DEAL)} in pipeline`}
+            sub={`~${fmt(state.pendingDeals * (cityConfig?.avgDealGCI ?? GAME_CONSTANTS.GCI_PER_DEAL))} in pipeline`}
           />
         </div>
 
@@ -617,12 +694,12 @@ function GameScreen({
         {/* ── Actions ── */}
         {state.phase === "action" && (
           <div className="flex flex-col gap-2">
-            <p className="text-xs font-bold text-white/40 uppercase tracking-wide">Actions</p>
+            <p className="text-xs font-bold text-white/40 uppercase tracking-wide">Actions — each rolls the dice</p>
             <ActionButton
               emoji="📞"
               label="Prospect — Sphere"
               subtitle="Call database, nurture pipeline. Low burnout. Best ROI."
-              onClick={() => dispatch({ type: "ACTION", actionType: "prospect-sphere" })}
+              onClick={() => triggerAction("prospect-sphere")}
               disabled={!canAct}
               variant="highlight"
             />
@@ -630,21 +707,21 @@ function GameScreen({
               emoji="🥶"
               label="Cold Prospect"
               subtitle="Expireds, FSBOs, circle prospect. High burnout, hot leads."
-              onClick={() => dispatch({ type: "ACTION", actionType: "cold-prospect" })}
+              onClick={() => triggerAction("cold-prospect")}
               disabled={!canAct}
             />
             <ActionButton
               emoji="🏠"
               label="Work Pipeline"
               subtitle="Showings, offers, presentations. Converts A-tier to pending."
-              onClick={() => dispatch({ type: "ACTION", actionType: "work-pipeline" })}
+              onClick={() => triggerAction("work-pipeline")}
               disabled={!canAct}
             />
             <ActionButton
               emoji="🎰"
               label="Marketing Roulette"
               subtitle={`Spend $2,000 on paid leads. 0–3 deal result. (Cash: ${fmt(state.cash)})`}
-              onClick={() => dispatch({ type: "ACTION", actionType: "marketing-roulette" })}
+              onClick={() => triggerAction("marketing-roulette")}
               disabled={!canAct || !hasCashForMarketing}
               variant={hasCashForMarketing ? "default" : "danger"}
             />
@@ -652,7 +729,7 @@ function GameScreen({
               emoji="😴"
               label="Rest"
               subtitle="Recover burnout. You can't close deals at 100% fried."
-              onClick={() => dispatch({ type: "ACTION", actionType: "rest" })}
+              onClick={() => triggerAction("rest")}
               disabled={!canAct}
             />
 
@@ -689,10 +766,10 @@ function GameScreen({
             )}
 
             <button
-              onClick={() => dispatch({ type: "END_TURN" })}
+              onClick={handleEndTurn}
               className="mt-2 w-full rounded-xl bg-yellow-400 text-black font-black py-4 text-base hover:bg-yellow-300 active:scale-95 transition-all disabled:opacity-50"
             >
-              End Turn → Close Q{state.quarter} Deals
+              🎲 End Turn → Close Q{state.quarter} Deals
             </button>
 
             {state.actionPoints < state.maxActionPoints && (
@@ -716,7 +793,7 @@ function GameScreen({
                   key={rc.card.id + i}
                   card={rc.card}
                   revealed={rc.revealed}
-                  onReveal={() => dispatch({ type: "REVEAL_CARD" })}
+                  onReveal={handleRevealCard}
                   onNext={() => dispatch({ type: "NEXT_CARD" })}
                   isLast={i === state.drawnCards.length - 1}
                 />
@@ -777,7 +854,7 @@ function TitleScreen({ onStart, onLoad, hasExisting }: { onStart: () => void; on
           <p className="text-sm text-white/70">
             Build your real estate career from Day 1 license to financial freedom. Grow your database, close deals, build
             a team, and acquire rental properties until your{" "}
-            <span className="text-yellow-400 font-bold">passive income exceeds monthly expenses</span> — that's Easy
+            <span className="text-yellow-400 font-bold">passive income exceeds monthly expenses</span> — that&apos;s Easy
             Street.
           </p>
           <div className="flex flex-col gap-1.5">
@@ -796,14 +873,12 @@ function TitleScreen({ onStart, onLoad, hasExisting }: { onStart: () => void; on
         </div>
 
         <div className="w-full rounded-2xl bg-white/5 border border-white/10 p-4">
-          <p className="text-xs font-bold text-white/40 uppercase tracking-wider mb-2">Authentic Math</p>
+          <p className="text-xs font-bold text-white/40 uppercase tracking-wider mb-2">v2 Features</p>
           <div className="grid grid-cols-2 gap-2 text-[10px] text-white/40">
-            <span>$8,550 GCI/deal (3% × $285K)</span>
-            <span>33 contacts = 1 deal/year</span>
-            <span>29.2% Cost of Sales</span>
-            <span>85% A-tier close rate</span>
-            <span>30% tax reserve rule</span>
-            <span>41.6% net margin</span>
+            <span>🎲 Animated dice rolls</span>
+            <span>🏙️ 5 cities to choose</span>
+            <span>👤 Character selection</span>
+            <span>🃏 80 city-specific cards</span>
           </div>
         </div>
       </div>
@@ -813,14 +888,33 @@ function TitleScreen({ onStart, onLoad, hasExisting }: { onStart: () => void; on
 
 // ── Setup Screen ───────────────────────────────────────────────────────
 
-function SetupScreen({ onConfirm }: { onConfirm: (name: string) => void }) {
+function SetupScreen({
+  character,
+  onConfirm,
+}: {
+  character: CharacterConfig;
+  onConfirm: (name: string) => void;
+}) {
   const [name, setName] = React.useState("");
+
+  const ageLabels: Record<string, string> = {
+    young: "Young Hustler — 5 AP, $5K start, 10 contacts",
+    mid: "Mid-Career — 3 AP, $8K start, 15 contacts",
+    veteran: "Veteran Closer — 2 AP, $13K start, 25 contacts",
+  };
+  const outfitLabels: Record<string, string> = {
+    formal: "Business Formal — +10% B→A conversion",
+    casual: "Smart Casual — +5 contacts/sphere",
+    hustle: "Hustle Mode — +1 AP bonus first action",
+  };
+
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-[#031019] text-white px-6">
       <div className="max-w-md w-full flex flex-col gap-6">
         <div className="text-center">
+          <p className="text-[10px] tracking-[0.4em] text-white/30 mb-2 uppercase">Step 2 of 3</p>
           <h2 className="text-3xl font-black mb-2">Your Agent Name</h2>
-          <p className="text-white/50 text-sm">You're about to get your real estate license.</p>
+          <p className="text-white/50 text-sm">You&apos;re about to get your real estate license.</p>
         </div>
         <input
           autoFocus
@@ -831,12 +925,10 @@ function SetupScreen({ onConfirm }: { onConfirm: (name: string) => void }) {
           className="w-full rounded-xl bg-white/10 border border-white/20 px-4 py-4 text-lg text-white placeholder-white/30 focus:outline-none focus:border-yellow-400"
         />
         <div className="rounded-xl bg-white/5 border border-white/10 p-4">
-          <p className="text-xs font-bold text-white/40 uppercase tracking-wider mb-2">Your Starting Position</p>
+          <p className="text-xs font-bold text-white/40 uppercase tracking-wider mb-2">Your Agent Profile</p>
           <div className="flex flex-col gap-1 text-sm text-white/60">
-            <p>💰 $8,000 in savings</p>
-            <p>📋 15 people in your database</p>
-            <p>🎯 2 warm prospects, 13 sphere contacts</p>
-            <p>📅 Year 1, Quarter 1</p>
+            <p>👤 {ageLabels[character.age]}</p>
+            <p>👗 {outfitLabels[character.outfit]}</p>
           </div>
         </div>
         <button
@@ -844,7 +936,7 @@ function SetupScreen({ onConfirm }: { onConfirm: (name: string) => void }) {
           disabled={!name.trim()}
           className="w-full rounded-xl bg-yellow-400 text-black font-black py-4 text-lg hover:bg-yellow-300 active:scale-95 transition-all disabled:opacity-40"
         >
-          Start Career →
+          Choose Your City →
         </button>
       </div>
     </div>
@@ -926,8 +1018,17 @@ function GameOverScreen({ state, onRestart }: { state: GameState; onRestart: () 
 // ── Root component ─────────────────────────────────────────────────────
 
 export default function AgentGame() {
-  const [screen, setScreen] = React.useState<"title" | "setup" | "game">("title");
-  const [hasExisting, setHasExisting] = React.useState(false);
+  type AppScreen = "trailer" | "title" | "character" | "setup" | "city" | "game";
+
+  const [screen, setScreen] = useState<AppScreen>("trailer");
+  const [hasExisting, setHasExisting] = useState(false);
+  const [character, setCharacter] = useState<CharacterConfig>({
+    gender: "male",
+    age: "mid",
+    outfit: "casual",
+  });
+  const [playerName, setPlayerName] = useState("");
+  const [selectedCity, setSelectedCity] = useState<CityId>("kansas-city");
 
   const [store, dispatch] = useReducer(gameReducer, {
     state: null,
@@ -936,42 +1037,75 @@ export default function AgentGame() {
     isLoading: false,
   });
 
-  // Check for saved game on mount
+  // Check for saved game + trailer status on mount
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("agent-game-state-v1");
+      const saved = localStorage.getItem("agent-game-state-v2");
       setHasExisting(!!saved);
+      // Check if trailer has already been seen this session
+      const trailerSeen = sessionStorage.getItem("agent-trailer-seen") === "true";
+      if (trailerSeen) {
+        setScreen("title");
+      }
     }
   }, []);
 
-  // Sync screen when state changes
+  // Sync screen when state loads
   useEffect(() => {
     if (store.state && screen !== "game") {
       setScreen("game");
     }
   }, [store.state, screen]);
 
-  const handleNewGame = () => setScreen("setup");
+  const handleTrailerComplete = () => setScreen("title");
+
+  const handleNewGame = () => setScreen("character");
+
   const handleLoadGame = () => {
     dispatch({ type: "LOAD" });
     setScreen("game");
   };
+
+  const handleCharacterConfirm = (char: CharacterConfig) => {
+    setCharacter(char);
+    setScreen("setup");
+  };
+
   const handleSetupConfirm = (name: string) => {
-    dispatch({ type: "START", playerName: name });
+    setPlayerName(name);
+    setScreen("city");
+  };
+
+  const handleCityConfirm = (city: CityId) => {
+    setSelectedCity(city);
+    dispatch({ type: "START", playerName, character, city });
     setScreen("game");
   };
+
   const handleRestart = () => {
     dispatch({ type: "RESTART" });
     setScreen("title");
     setHasExisting(false);
   };
 
+  if (screen === "trailer") {
+    return <TrailerScreen onComplete={handleTrailerComplete} />;
+  }
+
   if (screen === "title") {
     return <TitleScreen onStart={handleNewGame} onLoad={handleLoadGame} hasExisting={hasExisting} />;
   }
 
+  if (screen === "character") {
+    return <CharacterSelect onConfirm={handleCharacterConfirm} />;
+  }
+
   if (screen === "setup") {
-    return <SetupScreen onConfirm={handleSetupConfirm} />;
+    return <SetupScreen character={character} onConfirm={handleSetupConfirm} />;
+  }
+
+  if (screen === "city") {
+    return <CitySelect onConfirm={handleCityConfirm} />;
   }
 
   if (!store.state) {

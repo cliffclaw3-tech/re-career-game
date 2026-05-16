@@ -17,8 +17,8 @@
  *   L4 Win: Passive income > $5K/month (Easy Street)
  */
 
-import type { GameState, GameLevel, Quarter, LogEntry, CardEffect } from './game-types';
-import { GAME_CONSTANTS } from './game-types';
+import type { GameState, GameLevel, Quarter, LogEntry, CardEffect, CharacterConfig, CityId } from './game-types';
+import { GAME_CONSTANTS, CITY_CONFIGS } from './game-types';
 import { buildWeightedDeck, getCardById, drawCardsFromDeck } from './game-cards';
 
 // ── Seasonal income weights (Wes's authentic Tri-Cities data) ──────────
@@ -73,16 +73,53 @@ export interface ActionResult {
 
 // ── Initial state factory ──────────────────────────────────────────────
 
-export function createInitialState(playerName: string): GameState {
+export function createInitialState(
+  playerName: string,
+  character: CharacterConfig = { gender: 'male', age: 'mid', outfit: 'casual' },
+  city: CityId = 'kansas-city'
+): GameState {
+  const cityConfig = CITY_CONFIGS[city];
+
+  // Base starting values
+  let startingCash = 8000;
+  let startingDB = 15;
+  let startingTierB = 2;
+  let startingTierC = 13;
+  let maxAP = 3;
+  let startingBurnout = 10;
+
+  // Age archetype modifiers
+  if (character.age === 'young') {
+    startingCash = 5000;        // -$3K
+    startingDB = 10;
+    startingTierB = 1;
+    startingTierC = 9;
+    maxAP = 5;                  // +2 AP
+    startingBurnout = 10;
+  } else if (character.age === 'veteran') {
+    startingCash = 13000;       // +$5K
+    startingDB = 25;
+    startingTierB = 4;
+    startingTierC = 21;
+    maxAP = 2;                  // -1 AP
+    startingBurnout = 10;
+  }
+
   return {
     playerName,
+    characterGender: character.gender,
+    characterAge: character.age,
+    characterOutfit: character.outfit,
+    city,
+    lastDiceRoll: null,
+
     round: 1,
     year: 1,
     quarter: 1,
     phase: 'action',
     level: 1,
 
-    cash: 8000,                    // starting savings
+    cash: startingCash,
     gciThisYear: 0,
     gciAllTime: 0,
     netIncomeThisYear: 0,
@@ -91,13 +128,13 @@ export function createInitialState(playerName: string): GameState {
     taxReserve: 0,
     taxTrapFired: false,
 
-    databaseSize: 15,              // new agent: small sphere
+    databaseSize: startingDB,
     tierA: 0,
-    tierB: 2,
-    tierC: 13,
+    tierB: startingTierB,
+    tierC: startingTierC,
     pendingDeals: 0,
 
-    burnoutMeter: 10,
+    burnoutMeter: startingBurnout,
     burnoutWarnings: 0,
 
     hasAssistant: false,
@@ -105,13 +142,13 @@ export function createInitialState(playerName: string): GameState {
 
     rentalProperties: 0,
     passiveIncomeMonthly: 0,
-    monthlyPersonalExpenses: GAME_CONSTANTS.MONTHLY_PERSONAL_EXPENSES,
+    monthlyPersonalExpenses: cityConfig.easyStreetMonthlyExpenses,
 
     marketMultiplier: 1.0,
     marketMultiplierRoundsLeft: 0,
 
-    actionPoints: 3,
-    maxActionPoints: 3,
+    actionPoints: maxAP,
+    maxActionPoints: maxAP,
 
     drawnCards: [],
     currentCardIndex: 0,
@@ -181,20 +218,44 @@ export function computeNaturalPipelineFlow(state: GameState): {
 export function executeAction(
   state: GameState,
   actionType: string,
-  deck: string[]
+  deck: string[],
+  diceRoll?: number
 ): { newState: GameState; result: ActionResult; newDeck: string[] } {
   let newState = { ...state };
+  if (diceRoll !== undefined) newState.lastDiceRoll = diceRoll;
   let newDeck = deck;
   let result: ActionResult;
+
+  // Dice multiplier for action outcomes
+  const diceMultiplier = diceRoll
+    ? diceRoll === 6 ? 1.5
+      : diceRoll === 5 ? 1.2
+      : diceRoll <= 2 ? (diceRoll === 1 ? 0.6 : 0.8)
+      : 1.0
+    : 1.0;
+
+  // Outfit bonus: hustle mode grants +1 AP on first action each round
+  const hustleBonus = (
+    state.characterOutfit === 'hustle' &&
+    state.actionPoints === state.maxActionPoints &&
+    actionType !== 'toggle-tax-reserve'
+  ) ? 1 : 0;
 
   switch (actionType) {
     case 'prospect-sphere': {
       // Work your database: sphere calls, follow-up, nurture
       // Cost: 1 AP, +5-12 burnout, promotes B→A, C→B, adds C-tier
       const burnoutCost = newState.hasAssistant ? 6 : 10;
-      const cAdded = 2 + Math.floor(Math.random() * 3); // 2–4 new C
-      const bPromoted = Math.floor(newState.tierC * 0.08); // 8% of C → B
-      const aPromoted = Math.floor(newState.tierB * 0.12); // 12% of B → A
+      // Veteran gets -5 burnout per action (experience buffer)
+      const veteranBuffer = newState.characterAge === 'veteran' ? 5 : 0;
+      const actualBurnout = Math.max(0, burnoutCost - veteranBuffer);
+
+      const baseC = 2 + Math.floor(Math.random() * 3); // 2–4 new C
+      // Casual outfit: +5 contacts added per Sphere Prospect
+      const outfitBonus = newState.characterOutfit === 'casual' ? 5 : 0;
+      const cAdded = Math.round(baseC * diceMultiplier) + outfitBonus;
+      const bPromoted = Math.round(Math.floor(newState.tierC * 0.08) * diceMultiplier); // 8% of C → B
+      const aPromoted = Math.round(Math.floor(newState.tierB * 0.12) * diceMultiplier); // 12% of B → A
 
       newState = {
         ...newState,
@@ -202,12 +263,12 @@ export function executeAction(
         tierB: newState.tierB + bPromoted - aPromoted,
         tierA: newState.tierA + aPromoted,
         databaseSize: newState.databaseSize + cAdded,
-        burnoutMeter: Math.min(100, newState.burnoutMeter + burnoutCost),
-        actionPoints: newState.actionPoints - 1,
+        burnoutMeter: Math.min(100, newState.burnoutMeter + actualBurnout),
+        actionPoints: newState.actionPoints - 1 + hustleBonus,
       };
 
       result = {
-        message: `Sphere prospecting: +${cAdded} new contacts, ${bPromoted} C→B, ${aPromoted} B→A. Burnout +${burnoutCost}.`,
+        message: `Sphere prospecting: +${cAdded} new contacts, ${bPromoted} C→B, ${aPromoted} B→A. Burnout +${actualBurnout}.${diceRoll ? ` 🎲 Rolled ${diceRoll}.` : ''}`,
         type: 'info',
         stateDelta: {},
       };
@@ -217,8 +278,13 @@ export function executeAction(
     case 'cold-prospect': {
       // Cold outreach: expireds, FSBOs, circle prospect
       // Cost: 1 AP, +15 burnout (no relationships yet), higher C gain
-      const burnoutCost = newState.hasAssistant ? 12 : 18;
-      const cAdded = 3 + Math.floor(Math.random() * 5); // 3–7 new C
+      const baseBurnout = newState.hasAssistant ? 12 : 18;
+      const veteranBuffer = newState.characterAge === 'veteran' ? 5 : 0;
+      // Young hustler: +5 burnout per cold prospect
+      const youngPenalty = newState.characterAge === 'young' ? 5 : 0;
+      const burnoutCost = Math.max(0, baseBurnout - veteranBuffer + youngPenalty);
+      const baseC = 3 + Math.floor(Math.random() * 5); // 3–7 new C
+      const cAdded = Math.round(baseC * diceMultiplier);
       const aChance = Math.random();
       const hotLead = aChance > 0.65 ? 1 : 0; // 35% chance of A-tier expired/FSBO
 
@@ -228,11 +294,11 @@ export function executeAction(
         tierA: newState.tierA + hotLead,
         databaseSize: newState.databaseSize + cAdded + hotLead,
         burnoutMeter: Math.min(100, newState.burnoutMeter + burnoutCost),
-        actionPoints: newState.actionPoints - 1,
+        actionPoints: newState.actionPoints - 1 + hustleBonus,
       };
 
       result = {
-        message: `Cold prospecting: +${cAdded} new C-tier contacts${hotLead ? ', 1 hot A-tier expired/FSBO!' : ''}. Burnout +${burnoutCost}.`,
+        message: `Cold prospecting: +${cAdded} new C-tier contacts${hotLead ? ', 1 hot A-tier expired/FSBO!' : ''}. Burnout +${burnoutCost}.${diceRoll ? ` 🎲 Rolled ${diceRoll}.` : ''}`,
         type: hotLead ? 'good' : 'info',
         stateDelta: {},
       };
@@ -243,22 +309,27 @@ export function executeAction(
       // Move hot prospects toward close: showings, presentations, offers
       // Cost: 1 AP, moderate burnout, converts A→pending
       const burnoutCost = newState.hasAssistant ? 8 : 12;
-      const convertedDeals = Math.floor(newState.tierA * 0.30 * newState.marketMultiplier);
-      const bToA = Math.floor(newState.tierB * 0.20);
+      const veteranBuffer = newState.characterAge === 'veteran' ? 5 : 0;
+      const actualBurnout = Math.max(0, burnoutCost - veteranBuffer);
+
+      // Formal outfit: +10% B→A conversion
+      const formalBonus = newState.characterOutfit === 'formal' ? 0.10 : 0;
+      const convertedDeals = Math.round(Math.floor(newState.tierA * 0.30 * newState.marketMultiplier) * diceMultiplier);
+      const bToA = Math.round(Math.floor(newState.tierB * (0.20 + formalBonus)) * diceMultiplier);
 
       newState = {
         ...newState,
         tierA: Math.max(0, newState.tierA - convertedDeals + bToA),
         tierB: Math.max(0, newState.tierB - bToA),
         pendingDeals: newState.pendingDeals + convertedDeals,
-        burnoutMeter: Math.min(100, newState.burnoutMeter + burnoutCost),
-        actionPoints: newState.actionPoints - 1,
+        burnoutMeter: Math.min(100, newState.burnoutMeter + actualBurnout),
+        actionPoints: newState.actionPoints - 1 + hustleBonus,
       };
 
       result = {
         message: convertedDeals > 0
-          ? `Pipeline work: ${convertedDeals} deal${convertedDeals > 1 ? 's' : ''} moved to pending! ${bToA} B→A promotions. Burnout +${burnoutCost}.`
-          : `Pipeline work: appointments set, ${bToA} B→A promotions. No closings yet. Burnout +${burnoutCost}.`,
+          ? `Pipeline work: ${convertedDeals} deal${convertedDeals > 1 ? 's' : ''} moved to pending! ${bToA} B→A promotions. Burnout +${actualBurnout}.${diceRoll ? ` 🎲 Rolled ${diceRoll}.` : ''}`
+          : `Pipeline work: appointments set, ${bToA} B→A promotions. No closings yet. Burnout +${actualBurnout}.${diceRoll ? ` 🎲 Rolled ${diceRoll}.` : ''}`,
         type: convertedDeals > 0 ? 'good' : 'info',
         stateDelta: {},
       };
@@ -316,7 +387,7 @@ export function executeAction(
       newState = {
         ...newState,
         burnoutMeter: Math.max(0, newState.burnoutMeter - burnoutRecovery),
-        actionPoints: newState.actionPoints - 1,
+        actionPoints: newState.actionPoints - 1 + hustleBonus,
       };
       result = {
         message: `Rest: burnout -${burnoutRecovery}. You needed this. Back to work.`,
@@ -435,11 +506,30 @@ export function executeAction(
 
 export function resolveEndOfRound(
   state: GameState,
-  deck: string[]
+  deck: string[],
+  diceRoll?: number
 ): { newState: GameState; newDeck: string[]; roundSummary: string[] } {
   let s = { ...state };
   const summary: string[] = [];
   let newDeck = deck;
+
+  // Apply end-turn dice roll effect
+  if (diceRoll !== undefined) {
+    s.lastDiceRoll = diceRoll;
+    if (diceRoll === 6) {
+      s.pendingDeals = s.pendingDeals + 1;
+      summary.push(`🎲 Rolled a 6 — bonus deal enters pending!`);
+    } else if (diceRoll === 2) {
+      const slip = Math.min(1, s.pendingDeals);
+      s.pendingDeals = Math.max(0, s.pendingDeals - slip);
+      s.tierA = s.tierA + slip;
+      if (slip > 0) summary.push(`🎲 Rolled a 2 — one deal slipped back to A-tier.`);
+    } else if (diceRoll === 1) {
+      const lost = Math.min(1, s.pendingDeals);
+      s.pendingDeals = Math.max(0, s.pendingDeals - lost);
+      if (lost > 0) summary.push(`🎲 Rolled a 1 — one pending deal fell through entirely!`);
+    }
+  }
 
   // 1. Natural pipeline promotion
   const flow = computeNaturalPipelineFlow(s);
@@ -607,9 +697,11 @@ export function resolveEndOfRound(
   }
 
   // 16. Draw cards for next round
-  const { drawn, remaining } = drawCardsFromDeck(newDeck, 2);
+  const cityConfig = CITY_CONFIGS[s.city] ?? CITY_CONFIGS['kansas-city'];
+  const cardsPerRound = cityConfig.cardsPerRound ?? 2;
+  const { drawn, remaining } = drawCardsFromDeck(newDeck, cardsPerRound);
   newDeck = remaining;
-  s.drawnCards = drawn.map((id) => ({ card: getCardById(id), revealed: false }));
+  s.drawnCards = drawn.map((id) => ({ card: getCardById(id, s.city), revealed: false }));
   s.currentCardIndex = 0;
   s.phase = s.gameOver ? 'game-over' : s.pendingLevelUp ? 'level-up' : 'card-draw';
 
@@ -622,18 +714,31 @@ export function resolveEndOfRound(
 
 // ── Card effect application ────────────────────────────────────────────
 
-export function applyCardEffect(state: GameState, effect: CardEffect): GameState {
+export function applyCardEffect(state: GameState, effect: CardEffect, diceRoll?: number): GameState {
   let s = { ...state };
 
-  if (effect.addTierA) s.tierA = Math.max(0, s.tierA + effect.addTierA);
-  if (effect.addTierB) s.tierB = Math.max(0, s.tierB + effect.addTierB);
+  // Apply dice multiplier to card effects
+  const isVictory = !!(effect.addCash && effect.addCash > 0) || !!(effect.addTierA && effect.addTierA > 0) || !!(effect.addPendingDeals && effect.addPendingDeals > 0);
+  let mult = 1.0;
+  if (diceRoll) {
+    if (isVictory) {
+      mult = diceRoll === 6 ? 1.3 : diceRoll === 5 ? 1.1 : diceRoll === 2 ? 0.9 : diceRoll === 1 ? 0.7 : 1.0;
+    } else {
+      // Trap cards — high roll softens, low roll amplifies
+      mult = diceRoll === 6 ? 0.6 : diceRoll === 5 ? 0.8 : diceRoll === 2 ? 1.1 : diceRoll === 1 ? 1.4 : 1.0;
+    }
+    s.lastDiceRoll = diceRoll;
+  }
+
+  if (effect.addTierA) s.tierA = Math.max(0, s.tierA + Math.round(effect.addTierA * (effect.addTierA > 0 ? mult : 1)));
+  if (effect.addTierB) s.tierB = Math.max(0, s.tierB + Math.round(effect.addTierB * (effect.addTierB > 0 ? mult : 1)));
   if (effect.addTierC) {
-    const delta = effect.addTierC;
+    const delta = Math.round(effect.addTierC * (effect.addTierC > 0 ? mult : 1));
     s.tierC = Math.max(0, s.tierC + delta);
     if (delta > 0) s.databaseSize = s.databaseSize + delta;
   }
-  if (effect.addCash) s.cash = s.cash + effect.addCash;
-  if (effect.addPendingDeals) s.pendingDeals = Math.max(0, s.pendingDeals + effect.addPendingDeals);
+  if (effect.addCash) s.cash = s.cash + Math.round(effect.addCash * (effect.addCash > 0 ? mult : 1));
+  if (effect.addPendingDeals) s.pendingDeals = Math.max(0, s.pendingDeals + Math.round(effect.addPendingDeals * (effect.addPendingDeals > 0 ? mult : 1)));
   if (effect.addPassiveIncomeMonthly) {
     s.passiveIncomeMonthly = s.passiveIncomeMonthly + effect.addPassiveIncomeMonthly;
   }
@@ -676,8 +781,8 @@ export function applyLevelUp(state: GameState): GameState {
 
 // ── Persistence ────────────────────────────────────────────────────────
 
-const SAVE_KEY = 'agent-game-state-v1';
-const DECK_KEY = 'agent-game-deck-v1';
+const SAVE_KEY = 'agent-game-state-v2';
+const DECK_KEY = 'agent-game-deck-v2';
 
 export function saveGame(state: GameState, deck: string[]): void {
   if (typeof window === 'undefined') return;
@@ -707,6 +812,6 @@ export function clearSave(): void {
   localStorage.removeItem(DECK_KEY);
 }
 
-export function initDeck(): string[] {
-  return buildWeightedDeck();
+export function initDeck(city?: CityId): string[] {
+  return buildWeightedDeck(city);
 }

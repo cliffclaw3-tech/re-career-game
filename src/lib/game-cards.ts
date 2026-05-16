@@ -10,6 +10,7 @@
  */
 
 import type { CardDef } from './game-types';
+import { CITY_CARDS } from './city-cards';
 
 export const CARDS: CardDef[] = [
   // ══════════════════════════════════════════════════
@@ -595,13 +596,33 @@ export const CARDS: CardDef[] = [
 ];
 
 /** Weighted shuffle — draw probability proportional to card weight */
-export function buildWeightedDeck(): string[] {
+export function buildWeightedDeck(city?: string): string[] {
   const deck: string[] = [];
-  for (const card of CARDS) {
-    for (let i = 0; i < card.weight; i++) {
-      deck.push(card.id);
+
+  // 60% city cards, 40% universal if city provided
+  if (city && CITY_CARDS[city as keyof typeof CITY_CARDS]) {
+    const cityCards = CITY_CARDS[city as keyof typeof CITY_CARDS];
+    // City cards pool (60% of deck)
+    for (const card of cityCards) {
+      for (let i = 0; i < card.weight; i++) {
+        deck.push(card.id);
+      }
+    }
+    // Universal cards pool (40% of deck) — scale weights down
+    for (const card of CARDS) {
+      const scaledWeight = Math.round(card.weight * 0.67);
+      for (let i = 0; i < scaledWeight; i++) {
+        deck.push(card.id);
+      }
+    }
+  } else {
+    for (const card of CARDS) {
+      for (let i = 0; i < card.weight; i++) {
+        deck.push(card.id);
+      }
     }
   }
+
   return shuffleDeck(deck);
 }
 
@@ -614,16 +635,33 @@ export function shuffleDeck(deck: string[]): string[] {
   return d;
 }
 
-export function getCardById(id: string): CardDef {
+export function getCardById(id: string, city?: string): CardDef {
+  // Check city cards first
+  if (city && CITY_CARDS[city as keyof typeof CITY_CARDS]) {
+    const cityCards = CITY_CARDS[city as keyof typeof CITY_CARDS];
+    const cityCard = cityCards.find((c) => c.id === id);
+    if (cityCard) return cityCard;
+  }
   const card = CARDS.find((c) => c.id === id);
-  if (!card) throw new Error(`Card not found: ${id}`);
+  if (!card) {
+    // Fallback: return a safe placeholder rather than throwing
+    return {
+      id,
+      name: 'Market Event',
+      type: 'market-event',
+      emoji: '📊',
+      description: 'Something happened in the market.',
+      effect: { message: 'Market conditions shifted.' },
+      weight: 1,
+    };
+  }
   return card;
 }
 
-export function drawCardsFromDeck(deck: string[], count: number): { drawn: string[]; remaining: string[] } {
+export function drawCardsFromDeck(deck: string[], count: number, city?: string): { drawn: string[]; remaining: string[] } {
   if (deck.length < count) {
     // Rebuild deck if running low
-    const newDeck = buildWeightedDeck();
+    const newDeck = buildWeightedDeck(city);
     const combined = [...deck, ...newDeck];
     return { drawn: combined.slice(0, count), remaining: combined.slice(count) };
   }
